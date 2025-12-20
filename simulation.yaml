@@ -1,0 +1,18 @@
+lb_port: 8079
+services:
+  auth-service:
+    name: "auth-service"
+    path: "./examples/auth-service/main.go"
+    start_port: 8083
+    end_port: 8200
+    replicas: 100
+    route_prefix: "/auth"
+    env: {}
+  second-ser:
+    name: "second-ser"
+    path: "./examples/auth-service/main.go"
+    start_port: 8201
+    end_port: 8400
+    replicas: 2
+    route_prefix: "/ser2"
+    env: {}

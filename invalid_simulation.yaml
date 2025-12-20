@@ -1,0 +1,9 @@
+lb_port: 8089
+services:
+  test-bad-range:
+    name: "test-bad-range"
+    path: "./examples/auth-service/main.go"
+    start_port: 8085
+    end_port: 8080 
+    replicas: 1
+    route_prefix: "/bad"
