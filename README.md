@@ -2,7 +2,7 @@
 
 A lightweight, local orchestration and load balancing tool for Go microservices.
 
-`go-replicate-local` allows you to simulate a distributed environment locally. It orchestrates multiple replicas of your services, manages their ports, and provides a Layer 7 Round-Robin load balancer to route traffic to them—all controlled via a terminal user interface (TUI).
+`go-replicate-local` allows you to simulate a distributed environment locally. It orchestrates multiple replicas of your services, manages their ports, and provides a application Round-Robin load balancer to route traffic to them—all controlled via a terminal user interface (TUI).
 
 ## Features
 
