@@ -62,7 +62,3 @@ go build -o go-sim ./cmd/orchestrator
 *   **Runner**: Wraps `go run`, handles process groups, and captures stdout/stderr.
 *   **Load Balancer**: A reverse proxy that cycles requests to active backends.
 *   **Interface**: A Bubble Tea-based TUI for control and monitoring.
-
-## License
-
-MIT
