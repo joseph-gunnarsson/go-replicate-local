@@ -1,4 +1,4 @@
-# Go-Sim-Local
+# Go-replicate-local
 
 A lightweight, local orchestration and load balancing tool for Go microservices.
 
