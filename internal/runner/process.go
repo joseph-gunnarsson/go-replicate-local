@@ -9,16 +9,13 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
+	"syscall"
 
-	"github.com/joseph-gunnarsson/go-sim-local/internal/config"
+	"github.com/joseph-gunnarsson/go-replicate-local/internal/config"
 )
 
-const (
-	encClearLine = "\033[2K"
-	encMoveStart = "\r"
-)
+
 
 type ReplicaLog struct {
 	ReplicaName string
@@ -29,6 +26,7 @@ type Runner struct {
 	CMDS            map[string]*CMDEXEC
 	logs            []ReplicaLog
 	isolatedReplica string
+	logCallback     func(string)
 	sync.RWMutex
 }
 
@@ -57,69 +55,11 @@ func (r *Runner) RemoveCmd(name string) {
 	delete(r.CMDS, name)
 }
 
-func (r *Runner) Clear() {
-	fmt.Print("\033[H\033[2J")
-}
 
-func (r *Runner) isolate(args []string) error {
-	if len(args) < 2 {
-		return errors.New("isolate command requires a replica name")
-	}
-	replicaName := strings.TrimSpace(args[1])
-	if _, ok := r.CMDS[replicaName]; !ok {
-		return fmt.Errorf("replica %s not found", replicaName)
-	}
 
-	r.Lock()
-	r.isolatedReplica = replicaName
-	r.Unlock()
-	r.Clear()
-	r.IsolateLogs(replicaName)
-	log.Printf("[Sim] Isolated logs for replica %s", replicaName)
-	return nil
 
-}
-
-func (r *Runner) ReadInput() error {
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		args := strings.Split(input, " ")
-		switch strings.TrimSpace(args[0]) {
-		case "isolate":
-			err := r.isolate(args)
-			if err != nil {
-				fmt.Println("Error:", err)
-			}
-		case "showall":
-			r.Lock()
-			r.isolatedReplica = ""
-			r.Unlock()
-			r.Clear()
-			log.Println("[Sim] Showing logs for all replicas")
-		default:
-			fmt.Println("[Sim] Unknown command")
-		}
-	}
-
-	return nil
-}
-
-func (r *Runner) ReadCurrentCommand() string {
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadByte()
-	if err != nil {
-		return ""
-	}
-	return string(input)
-
-}
 
 func (r *Runner) StartService(ctx context.Context, cfgService config.Service) error {
-	r.Clear()
 
 	for i := 0; i < cfgService.Replicas; i++ {
 		replicaName := fmt.Sprintf("%s-%d", cfgService.Name, i+1)
@@ -131,6 +71,8 @@ func (r *Runner) StartService(ctx context.Context, cfgService config.Service) er
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
 		cmd.Env = append(cmd.Env, fmt.Sprintf("PORT=%d", cfgService.StartPort+i))
+
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -180,10 +122,7 @@ func (r *Runner) outputLogs(replicaName, logType string, pipe io.ReadCloser) {
 		r.UpdateLatestLog()
 	}
 }
-func printLogAboveInput(msg string) {
-	fmt.Print("\r\x1b[1L")
-	fmt.Println(msg)
-}
+
 
 func (r *Runner) UpdateLatestLog() {
 	r.RLock()
@@ -196,9 +135,10 @@ func (r *Runner) UpdateLatestLog() {
 	latestLog := r.logs[len(r.logs)-1]
 
 	if r.isolatedReplica == "" || r.isolatedReplica == latestLog.ReplicaName {
-		printLogAboveInput(latestLog.Message)
+		if r.logCallback != nil {
+			r.logCallback(latestLog.Message)
+		}
 	}
-
 }
 func (r *Runner) addLog(replicaName, logLine string) {
 	r.Lock()
@@ -221,18 +161,9 @@ func (r *Runner) GetLogs() []ReplicaLog {
 	return filtered
 }
 
-func (r *Runner) IsolateLogs(replicaName string) {
-	r.RLock()
-	defer r.RUnlock()
-	r.Clear()
-	for _, l := range r.logs {
-		if l.ReplicaName != replicaName {
-			log.Println(l.Message)
-		}
-	}
-}
 
-func (r *Runner) stopReplica(replicaName string) {
+
+func (r *Runner) StopReplica(replicaName string) error {
 	r.Lock()
 	replica, ok := r.CMDS[replicaName]
 	if ok {
@@ -241,12 +172,51 @@ func (r *Runner) stopReplica(replicaName string) {
 	r.Unlock()
 
 	if !ok {
-		return
+		return fmt.Errorf("replica %s not found", replicaName)
 	}
 
-	if err := replica.Cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		log.Printf("[Sim] Error killing replica %s: %s", replicaName, err)
+	pgid, err := syscall.Getpgid(replica.Cmd.Process.Pid)
+	if err == nil {
+		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+			log.Printf("[Sim] Error killing replica group %s: %s", replicaName, err)
+		}
+	} else {
+		if err := replica.Cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Printf("[Sim] Error killing replica %s: %s", replicaName, err)
+			return err
+		}
 	}
+	
+	log.Printf("[Sim] Stopped replica %s", replicaName)
+	return nil
+}
+
+func (r *Runner) ListReplicas() []string {
+	r.RLock()
+	defer r.RUnlock()
+	replicas := make([]string, 0, len(r.CMDS))
+	for name := range r.CMDS {
+		replicas = append(replicas, name)
+	}
+	return replicas
+}
+
+func (r *Runner) GetIsolatedReplica() string {
+	r.RLock()
+	defer r.RUnlock()
+	return r.isolatedReplica
+}
+
+func (r *Runner) SetIsolatedReplica(name string) {
+	r.Lock()
+	defer r.Unlock()
+	r.isolatedReplica = name
+}
+
+func (r *Runner) SetLogCallback(cb func(string)) {
+	r.Lock()
+	defer r.Unlock()
+	r.logCallback = cb
 }
 
 func (r *Runner) ShutdownAll() {
@@ -258,6 +228,6 @@ func (r *Runner) ShutdownAll() {
 	r.RUnlock()
 
 	for _, name := range replicas {
-		r.stopReplica(name)
+		r.StopReplica(name)
 	}
 }

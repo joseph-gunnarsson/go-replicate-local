@@ -11,7 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/joseph-gunnarsson/go-sim-local/internal/config"
+	"github.com/joseph-gunnarsson/go-replicate-local/internal/config"
 )
 
 type Backend struct {

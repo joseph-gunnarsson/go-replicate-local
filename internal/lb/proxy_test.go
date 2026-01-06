@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joseph-gunnarsson/go-sim-local/internal/config"
+	"github.com/joseph-gunnarsson/go-replicate-local/internal/config"
 )
 
 func startMockServer(port int, id string) *http.Server {

@@ -10,7 +10,8 @@ func main() {
 	port := os.Getenv("PORT")
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {	
+		log.Println("Health check on port " + port)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK on port " + port))
 	})

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -11,27 +12,59 @@ import (
 )
 
 type LogMsg string
+type StatusMsg string
+type SetFilterMsg string
+
+type Program = tea.Program
+
+var (
+	titleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFDF5")).
+			Background(lipgloss.Color("#6C5CE7")).
+			Padding(0, 1).
+			Bold(true)
+
+	statusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#A0A0A0")).
+			Padding(0, 1)
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#626262"))
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF6B6B")).
+			Bold(true)
+
+	successStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2ECC71")).
+			Bold(true)
+
+	lineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6C5CE7"))
+)
 
 type Model struct {
-	viewport  viewport.Model
-	textInput textinput.Model
-	cmdChan   chan<- string
-    content   string // Buffer for logs
-	ready     bool
-	err       error
+	viewport       viewport.Model
+	textInput      textinput.Model
+	cmdChan        chan<- string
+	content        string
+	statusMessage  string
+	isolatedFilter string
+	ready          bool
+	width          int
+	height         int
 }
 
-func initialModel(cmdChan chan<- string) Model {
+func NewModel(cmdChan chan<- string) Model {
 	ti := textinput.New()
-	ti.Placeholder = "Type a command..."
+	ti.Placeholder = "Type a command (help for list)..."
 	ti.Focus()
-	ti.CharLimit = 156
-	ti.Width = 20
+	ti.CharLimit = 256
+	ti.Width = 50
 
 	return Model{
 		textInput: ti,
 		cmdChan:   cmdChan,
-        content:   "",
 	}
 }
 
@@ -47,9 +80,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
 		headerHeight := lipgloss.Height(m.headerView())
 		footerHeight := lipgloss.Height(m.footerView())
-		verticalMarginHeight := headerHeight + footerHeight
+		verticalMarginHeight := headerHeight + footerHeight + 1
 
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
@@ -62,17 +98,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case LogMsg:
-        m.content += string(msg) + "\n"
-        m.viewport.SetContent(m.content)
-        m.viewport.GotoBottom()
+		m.content += string(msg) + "\n"
+		m.viewport.SetContent(m.content)
+		m.viewport.GotoBottom()
+
+	case StatusMsg:
+		m.statusMessage = string(msg)
+
+	case SetFilterMsg:
+		m.isolatedFilter = string(msg)
 
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
+			go func() { m.cmdChan <- "quit" }()
+			return m, tea.Quit
+		case tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			cmd := m.textInput.Value()
-			if strings.TrimSpace(cmd) != "" {
+			cmd := strings.TrimSpace(m.textInput.Value())
+			if cmd != "" {
 				go func() { m.cmdChan <- cmd }()
 				m.textInput.SetValue("")
 			}
@@ -85,10 +130,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(tiCmd, vpCmd)
 }
 
-// Log accumulation helper needed in Update
-// Since we can't easily append to Viewport without storing state, 
-// I'll add a `content string` to Model.
-
 func (m Model) View() string {
 	if !m.ready {
 		return "\n  Initializing..."
@@ -97,19 +138,37 @@ func (m Model) View() string {
 }
 
 func (m Model) headerView() string {
-	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFDF5")).
-		Background(lipgloss.Color("#255273")).
-		Padding(0, 1).
-		Render("Orchestrator Logs")
-	line := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#255273")).
-		Render(strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title))))
-	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
+	title := titleStyle.Render("🚀 Go-Sim Orchestrator")
+
+	var status string
+	if m.isolatedFilter != "" {
+		status = statusStyle.Render(fmt.Sprintf("Isolated: %s", m.isolatedFilter))
+	} else {
+		status = statusStyle.Render("Showing: all")
+	}
+
+	titleWidth := lipgloss.Width(title)
+	statusWidth := lipgloss.Width(status)
+	lineWidth := max(0, m.width-titleWidth-statusWidth)
+	line := lineStyle.Render(strings.Repeat("─", lineWidth))
+
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, line, status)
 }
 
 func (m Model) footerView() string {
-	return m.textInput.View()
+	var statusLine string
+	if m.statusMessage != "" {
+		statusLine = m.statusMessage + "\n"
+	}
+
+	inputLine := m.textInput.View()
+	hint := helpStyle.Render(" (Ctrl+C to quit)")
+
+	return statusLine + inputLine + hint
+}
+
+func (m *Model) SetIsolatedFilter(name string) {
+	m.isolatedFilter = name
 }
 
 func max(a, b int) int {
@@ -119,32 +178,62 @@ func max(a, b int) int {
 	return b
 }
 
-// Start initializes the TUI and returns channels for interaction
-func Start() (chan<- string, <-chan string, error) {
-	logChan := make(chan string, 100)
-	cmdChan := make(chan string, 100)
-    
-    // We need to capture the logs. 
-    // The Update method needs to handle LogMsg.
-    // But we need to handle the content appending logic.
-    // I'll rewrite the Update method in the file correctly.
-    
-	m := initialModel(cmdChan)
-    // We need to initialize the content buffer in model if we want logs.
-    
+func HelpText() string {
+	return `
+┌─────────────────────────────────────────────────┐
+│                 Available Commands               │
+├─────────────────────────────────────────────────┤
+│  help              Show this help message        │
+│  list              List all running replicas     │
+│  isolate <name>    Show logs from one replica    │
+│  showall           Show logs from all replicas   │
+│  kill <name>       Stop a specific replica       │
+│  quit              Shutdown and exit             │
+└─────────────────────────────────────────────────┘`
+}
+
+func FormatReplicaList(replicas []string) string {
+	if len(replicas) == 0 {
+		return "No replicas running."
+	}
+
+	sort.Strings(replicas)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Running replicas (%d):\n", len(replicas)))
+	for _, r := range replicas {
+		sb.WriteString(fmt.Sprintf("  • %s\n", r))
+	}
+	return sb.String()
+}
+
+func FormatError(msg string) string {
+	return errorStyle.Render("✗ " + msg)
+}
+
+func FormatSuccess(msg string) string {
+	return successStyle.Render("✓ " + msg)
+}
+
+func Setup() (logChan chan<- string, cmdChan <-chan string, program *tea.Program) {
+	logs := make(chan string, 100)
+	cmds := make(chan string, 100)
+
+	m := NewModel(cmds)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	go func() {
-		for msg := range logChan {
+		for msg := range logs {
 			p.Send(LogMsg(msg))
 		}
 	}()
+	
+	return logs, cmds, p
+}
 
-	go func() {
-		if _, err := p.Run(); err != nil {
-			fmt.Printf("Alas, there's been an error: %v", err)
-		}
-	}()
+func SendStatus(p *tea.Program, msg string) {
+	p.Send(StatusMsg(msg))
+}
 
-	return logChan, cmdChan, nil
+func SendLog(p *tea.Program, msg string) {
+	p.Send(LogMsg(msg))
 }
